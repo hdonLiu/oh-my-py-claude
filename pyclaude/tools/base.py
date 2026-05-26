@@ -1,23 +1,53 @@
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
-class Tool:
+class ToolResult:
+    content: str
+    is_error: bool = False
+
+
+class Tool(ABC):
     name: str
-    needs_permission: bool
-    plan_mode_enabled: bool = True
-    supports_non_interactive: bool = True
+    description_text: str
+    input_schema: dict[str, Any]
 
+    @abstractmethod
+    async def call(self, input: dict[str, Any], context: Any = None) -> ToolResult:
+        pass
 
-@dataclass(frozen=True)
-class ToolUseContext:
-    plan_mode: bool
-    is_interactive: bool
+    def description(self, input: dict[str, Any] | None = None) -> str:
+        return self.description_text
 
-    def allows(self, tool: Tool) -> bool:
-        if self.plan_mode and not tool.plan_mode_enabled:
-            return False
-        if not self.is_interactive and not tool.supports_non_interactive:
-            return False
+    @abstractmethod
+    def is_read_only(self, input: dict[str, Any] | None = None) -> bool:
+        pass
 
-        return True
+    def is_concurrency_safe(self, input: dict[str, Any] | None = None) -> bool:
+        return self.is_read_only(input)
+
+    def is_destructive(self, input: dict[str, Any] | None = None) -> bool:
+        return False
+
+    def interrupt_behavior(self) -> str:
+        return "block"
+
+    def needs_permission(self, input: dict[str, Any] | None = None) -> bool:
+        return not self.is_read_only(input)
+
+    def validate_input(self, input: dict[str, Any]) -> None:
+        required = self.input_schema.get("required", [])
+        for key in required:
+            if key not in input:
+                raise ValueError(f"Missing required input: {key}")
+
+    def to_api_definition(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description_text,
+            "input_schema": self.input_schema,
+        }

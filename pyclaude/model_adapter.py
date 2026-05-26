@@ -1,41 +1,47 @@
-from collections.abc import AsyncGenerator
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import Any
 
 from anthropic import AsyncAnthropic
 
-from pyclaude.app_state import AppState
-from pyclaude.messages import AssistantMessage, UserMessage
+from pyclaude.messages import AssistantMessage, TextBlock, ToolUseBlock
+from pyclaude.tools.base import Tool
 
 DEFAULT_MODEL = "claude-opus-4-6"
 DEFAULT_MAX_TOKENS = 64000
 
 
 @dataclass(frozen=True)
-class ModelTextDelta:
-    text: str
+class ModelConfig:
+    model: str = DEFAULT_MODEL
+    max_tokens: int = DEFAULT_MAX_TOKENS
 
 
-def _to_api_messages(state: AppState) -> list[dict]:
-    result = []
-    for msg in state.messages:
-        if isinstance(msg, UserMessage):
-            result.append({"role": "user", "content": msg.content})
-        elif isinstance(msg, AssistantMessage):
-            result.append({"role": "assistant", "content": msg.content})
-    return result
+def parse_api_response(raw: Any) -> AssistantMessage:
+    content = []
+    for block in raw.content:
+        if block.type == "text":
+            content.append(TextBlock(text=block.text))
+        elif block.type == "tool_use":
+            content.append(ToolUseBlock(id=block.id, name=block.name, input=block.input))
+    return AssistantMessage(content=content, stop_reason=getattr(raw, "stop_reason", "end_turn") or "end_turn")
 
 
-async def query_model_with_streaming(*, prompt: str, state: AppState) -> AsyncGenerator[ModelTextDelta, None]:
+async def call_model(
+    *,
+    messages: list[dict[str, Any]],
+    tools: dict[str, Tool],
+    config: ModelConfig | None = None,
+) -> AssistantMessage:
+    cfg = config or ModelConfig()
     client = AsyncAnthropic()
-    messages = _to_api_messages(state)
-
-    async with client.messages.stream(
-        model=DEFAULT_MODEL,
-        max_tokens=DEFAULT_MAX_TOKENS,
-        thinking={"type": "adaptive"},
-        messages=messages,
-    ) as stream:
-        async for text in stream.text_stream:
-            if text:
-                yield ModelTextDelta(text=text)
-        await stream.get_final_message()
+    kwargs: dict[str, Any] = {
+        "model": cfg.model,
+        "max_tokens": cfg.max_tokens,
+        "messages": messages,
+    }
+    if tools:
+        kwargs["tools"] = [tool.to_api_definition() for tool in tools.values()]
+    response = await client.messages.create(**kwargs)
+    return parse_api_response(response)

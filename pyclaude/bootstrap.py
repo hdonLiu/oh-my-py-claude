@@ -1,11 +1,12 @@
-import asyncio
-from dataclasses import asdict
+from __future__ import annotations
 
-from pyclaude.main import build_app, DEFAULT_COMMANDS
-from pyclaude.permissions import ToolPermissionContext
+import asyncio
+
+from pyclaude.main import DEFAULT_COMMANDS, build_app
+from pyclaude.messages import AssistantMessageEvent, ToolResultEvent
 from pyclaude.query_engine import QueryEngine
-from pyclaude.tools.base import Tool, ToolUseContext
-from pyclaude.tools.registry import get_tools
+from pyclaude.tools.base import Tool
+from pyclaude.tools.registry import get_default_tools
 
 
 def run_cli(args, extra_tools_provider: dict[str, Tool] | None = None) -> dict:
@@ -13,20 +14,29 @@ def run_cli(args, extra_tools_provider: dict[str, Tool] | None = None) -> dict:
         return {"mode": "print-commands", "commands": list(DEFAULT_COMMANDS)}
 
     prompt = args.prompt or ""
+    if not prompt:
+        return {"mode": "repl", "message": "Interactive mode not yet implemented."}
 
-    tools = get_tools(
-        tool_use_context=ToolUseContext(plan_mode=False, is_interactive=True),
-        permission_context=ToolPermissionContext(mode="default", allow_sensitive=False),
-        extra_tools=extra_tools_provider,
-    )
+    tools = get_default_tools()
+    if extra_tools_provider:
+        tools.update(extra_tools_provider)
+
     app = build_app(tools=tools)
     engine = QueryEngine(tools=tools)
     events = asyncio.run(engine.submit_message(prompt))
+
+    output = []
+    for event in events:
+        if isinstance(event, AssistantMessageEvent) and event.message.text:
+            output.append(event.message.text)
+        elif isinstance(event, ToolResultEvent):
+            output.append(f"[{event.tool_name}] {event.content}")
 
     return {
         "mode": "prompt",
         "app": app,
         "prompt": prompt,
-        "events": [asdict(event) for event in events],
-        "state": asdict(engine.state),
+        "events": events,
+        "state": engine.state,
+        "output": "\n".join(output),
     }
